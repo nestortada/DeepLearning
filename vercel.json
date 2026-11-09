@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "npm --prefix frontend ci --include=dev",
+  "buildCommand": "npm --prefix frontend run build",
+  "outputDirectory": "frontend/dist",
+  "headers": [
+    {
+      "source": "/:path*",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; connect-src 'self' https:; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        }
+      ]
+    }
+  ]
+}

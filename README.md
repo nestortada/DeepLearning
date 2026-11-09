@@ -264,7 +264,7 @@ Abre [GlaucoAI](http://127.0.0.1:8000/). El contenedor compila React, sirve la a
 
 ### Frontend en Vercel
 
-1. Importa el mismo repositorio y elige **`frontend`** como **Root Directory**. Selecciona Node.js 24. `frontend/vercel.json` compila Vite y publica `dist`.
+1. Importa el mismo repositorio y selecciona Node.js 24. Puedes usar **`frontend`** como **Root Directory** o dejar la raíz del repositorio. En ambos casos, `vercel.json` instala las dependencias de compilación de Vite y publica el contenido de `frontend/dist`.
 2. En **Settings → Environment Variables**, configura `VITE_API_URL` con el origen HTTPS de Render, por ejemplo `https://glaucoai-api.onrender.com`. Selecciona **Production** y vuelve a desplegar si cambias el valor. [Variables de entorno en Vercel](https://vercel.com/docs/environment-variables/managing-environment-variables)
 3. En **Deployment Protection**, verifica que el dominio de producción sea público y comparte esa URL. Prueba la demo con imágenes sintéticas. Usa datos médicos únicamente tras revisar los permisos y el tratamiento de datos en ambos proveedores. [Protección de despliegues en Vercel](https://vercel.com/docs/deployment-protection)
 
