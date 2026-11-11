@@ -1,0 +1,54 @@
+{
+  "budget": 64,
+  "target": 0.85,
+  "seeds": [42, 43, 44],
+  "architectures": ["resnet18", "resnet34", "efficientnet_b0"],
+  "common": {
+    "image_size": 224,
+    "batch_size": 16,
+    "epochs": 15,
+    "patience": 5,
+    "learning_rate": 0.0003,
+    "positive_weight": 3.807017543859649,
+    "tune_blocks": 1,
+    "cache_preprocessed": true
+  },
+  "tuning": {
+    "last": {},
+    "head": {"tune_blocks": 0},
+    "two": {"tune_blocks": 2},
+    "progressive": {"progressive_head_epochs": 3},
+    "bn-active": {"freeze_batch_norm": false}
+  },
+  "losses": {
+    "bce": {"positive_weight": 1.0},
+    "bce-w2": {"positive_weight": 2.0},
+    "focal": {"positive_weight": 1.0, "focal_loss": true}
+  },
+  "hyperparameters": {
+    "lr-low": {"learning_rate": 0.0001},
+    "lr-high": {"learning_rate": 0.001},
+    "lr-groups": {"backbone_learning_rate": 0.00003},
+    "adam-l2": {"weight_decay": 0.0001},
+    "adamw": {"optimizer": "adamw", "weight_decay": 0.0001},
+    "sgd": {"optimizer": "sgd"},
+    "sgd-high": {"optimizer": "sgd", "learning_rate": 0.003},
+    "plateau": {"scheduler": "plateau"},
+    "cosine": {"scheduler": "cosine"},
+    "batch8": {"batch_size": 8},
+    "batch32": {"batch_size": 32},
+    "accum32": {"accumulation_steps": 2}
+  },
+  "regularization": {
+    "rotation": {"augmentation": "rotation"},
+    "brightness": {"augmentation": "brightness"},
+    "contrast": {"augmentation": "contrast"},
+    "zoomout": {"augmentation": "zoomout"},
+    "no-flip": {"augment_train": false},
+    "dropout": {"dropout": 0.2},
+    "decay": {"weight_decay": 0.001},
+    "smoothing": {"label_smoothing": 0.05, "focal_loss": false},
+    "patience3": {"patience": 3}
+  },
+  "hardware_epochs": 5
+}

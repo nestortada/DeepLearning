@@ -2,11 +2,13 @@
 
 import base64
 import json
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
@@ -34,7 +36,8 @@ class BackendTests(unittest.TestCase):
             model = PapilaResNet18(pretrained=False).eval().requires_grad_(False)
         model.fc_out.weight.fill_(1 / 512)
         model.fc_out.bias.fill_(-3)
-        metadata = json.loads(main.CONFIG.read_text(encoding="utf-8"))["models"]["ResNet18"]["metadata"]
+        frozen = main.ROOT / "configs" / "papila-internal-test.json"
+        metadata = json.loads(frozen.read_text(encoding="utf-8"))["models"]["ResNet18"]["metadata"]
         cls.service = main.ModelService(model, metadata, 0.35, torch.device("cpu"))
 
     def setUp(self):
@@ -63,7 +66,9 @@ class BackendTests(unittest.TestCase):
             forward.assert_called_once()
         data = analysis.json()
         prediction = self.post("/predict", upload()).json()
-        self.assertEqual(set(prediction), {"label", "classification", "threshold", "score_glaucoma"})
+        self.assertEqual(set(prediction), {"model", "label", "classification", "threshold", "score_glaucoma"})
+        self.assertEqual(prediction["model"], "resnet18")
+        self.assertEqual(data["model"], prediction["model"])
         self.assertAlmostEqual(prediction["score_glaucoma"], data["score_glaucoma"], places=6)
         self.assertEqual(prediction["label"], int(data["score_glaucoma"] >= 0.35))
         self.assertEqual(data["classification"], ("sano", "glaucoma")[prediction["label"]])
@@ -129,10 +134,23 @@ class ModelStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "best.pt"
             path.write_bytes(b"corrupted checkpoint")
-            with patch.object(main, "CHECKPOINT", path), patch.object(main, "load_checkpoint") as deserialize:
+            spec = main.ModelSpec("resnet34", path, "0" * 64, 0.5)
+            with patch.object(main, "model_spec", return_value=spec), patch.object(main, "load_checkpoint") as deserialize:
                 with self.assertRaisesRegex(ValueError, "SHA-256"):
                     main.load_model()
             deserialize.assert_not_called()
+
+    def test_model_selection_rejects_unknown_architectures(self):
+        with patch.dict(os.environ, {"GLAUCOAI_MODEL": "unknown"}), patch.object(main, "load_service") as loader:
+            with self.assertRaisesRegex(ValueError, "GLAUCOAI_MODEL"):
+                main.load_model()
+            loader.assert_not_called()
+
+    def test_checkpoint_architecture_must_match_the_registry(self):
+        service = SimpleNamespace(model=SimpleNamespace(architecture="resnet18"))
+        with patch.dict(os.environ, {"GLAUCOAI_MODEL": "resnet34"}), patch.object(main, "load_service", return_value=service):
+            with self.assertRaisesRegex(ValueError, "arquitectura configurada"):
+                main.load_model()
 
     def test_health_and_analysis_return_503_when_checkpoint_is_missing(self):
         with patch.object(main, "load_model", side_effect=FileNotFoundError):

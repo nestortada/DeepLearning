@@ -111,6 +111,24 @@ class PapilaLoaderTests(unittest.TestCase):
         next(iter(loaders.train))
         next(iter(loaders.val))
 
+    def test_image_cache_decodes_once_and_keeps_augmentation_per_access(self) -> None:
+        cached = make_loaders(self.root, self.manifest, device=self.cpu, image_size=4, cache_preprocessed=True)
+        plain = make_loaders(self.root, self.manifest, device=self.cpu, image_size=4, augment_train=False)
+        expected, label = plain.train.dataset[0]
+        flips = iter((False, True))
+        with patch.object(Image, "open", wraps=Image.open) as decode, patch.object(
+            transforms.RandomHorizontalFlip, "forward",
+            side_effect=lambda pixels: pixels.flip(-1) if next(flips) else pixels,
+        ) as flip:
+            first, first_label = cached.train.dataset[0]
+            second, second_label = cached.train.dataset[0]
+        decode.assert_called_once()
+        self.assertEqual(flip.call_count, 2)
+        torch.testing.assert_close(first, expected)
+        torch.testing.assert_close(second, expected.flip(-1))
+        torch.testing.assert_close(first_label, label)
+        torch.testing.assert_close(second_label, label)
+
     def test_rejects_patient_overlap(self) -> None:
         self.rows[1]["split"] = "test"
         self._write_manifest()

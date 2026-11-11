@@ -45,7 +45,7 @@ class Letterbox:
 
 def make_image_transform(
     image_size: int, normalization: Normalization | None = None, *,
-    augment: bool = False, preserve_aspect: bool = False,
+    augment: bool = False, preserve_aspect: bool = False, augmentation: str = "flip",
 ) -> transforms.Compose:
     """Share the RGB image preprocessing across training, evaluation and inference."""
     steps = [
@@ -56,6 +56,20 @@ def make_image_transform(
     ]
     if augment:
         steps.append(transforms.RandomHorizontalFlip(p=0.5))
+        if augmentation in {"photometric", "brightness", "contrast"}:
+            steps.append(transforms.ColorJitter(
+                brightness=0.10 if augmentation != "contrast" else 0,
+                contrast=0.10 if augmentation != "brightness" else 0,
+            ))
+        elif augmentation == "rotation":
+            # Leave enough margin for a 5° rotation even at the corners of a square.
+            steps.append(transforms.RandomAffine(
+                degrees=5, scale=(0.92, 0.92), interpolation=transforms.InterpolationMode.BILINEAR,
+            ))
+        elif augmentation == "zoomout":
+            steps.append(transforms.RandomAffine(
+                degrees=0, scale=(0.92, 1.0), interpolation=transforms.InterpolationMode.BILINEAR,
+            ))
     if normalization is not None:
         steps.append(transforms.Normalize(normalization.mean, normalization.std))
     return transforms.Compose(steps)
@@ -69,23 +83,36 @@ class PapilaDataset(Dataset[Sample]):
         dataset_dir: Path,
         records: Sequence[ImageRecord],
         transform: Callable[[Image.Image], torch.Tensor],
+        *,
+        after_cache: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        cached_pixels: dict[int, torch.Tensor] | None = None,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.records = tuple(records)
         self.transform = transform
+        self.after_cache = after_cache
+        self.cached_pixels = {} if cached_pixels is None else cached_pixels
 
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, index: int) -> Sample:
         record = self.records[index]
+        if self.after_cache is None:
+            pixels = self._load_pixels(record)
+        else:
+            if index not in self.cached_pixels:
+                self.cached_pixels[index] = self._load_pixels(record)
+            pixels = self.after_cache(self.cached_pixels[index])
+        return pixels, torch.tensor(record.label, dtype=torch.float32)
+
+    def _load_pixels(self, record: ImageRecord) -> torch.Tensor:
         path = self.dataset_dir / record.relative_path
         try:
             with Image.open(path) as image:
-                pixels = self.transform(image if image.mode == "RGB" else image.convert("RGB"))
+                return self.transform(image if image.mode == "RGB" else image.convert("RGB"))
         except (OSError, Image.DecompressionBombError) as error:
             raise ValueError(f"No se pudo cargar {record.image_id} desde {path}: {error}") from error
-        return pixels, torch.tensor(record.label, dtype=torch.float32)
 
 
 @dataclass(frozen=True)
@@ -170,10 +197,18 @@ def make_loaders(
     include_test: bool = False,
     normalization: Normalization | None = None,
     preserve_aspect: bool = False,
+    cache_preprocessed: bool = False,
+    augmentation: str = "flip",
+    persistent_workers: bool = False,
+    shared_cache: dict[str, dict[int, torch.Tensor]] | None = None,
 ) -> PapilaLoaders:
     """Build CPU loaders using the CSV assignments. Enable test only for final evaluation."""
     if batch_size < 1 or num_workers < 0 or image_size < 1:
         raise ValueError("batch_size e image_size deben ser positivos y num_workers no puede ser negativo.")
+    if cache_preprocessed and num_workers != 0:
+        raise ValueError("La caché de imágenes requiere num_workers=0.")
+    if persistent_workers and num_workers == 0:
+        raise ValueError("Los workers persistentes requieren num_workers > 0.")
     records = _read_manifest(manifest)
     device = device if device is not None else select_device()
     stats = normalization
@@ -182,16 +217,25 @@ def make_loaders(
         stats = _fit_normalization(PapilaDataset(dataset_dir, records["train"], base))
     evaluate = make_image_transform(image_size, stats, preserve_aspect=preserve_aspect)
     train_transform = make_image_transform(
-        image_size, stats, augment=True, preserve_aspect=preserve_aspect,
+        image_size, stats, augment=True, preserve_aspect=preserve_aspect, augmentation=augmentation,
     ) if augment_train else evaluate
 
-    def loader(split: str, transform: Callable[[Image.Image], torch.Tensor]) -> DataLoader[Sample]:
+    def loader(split: str, transform: transforms.Compose) -> DataLoader[Sample]:
+        if cache_preprocessed:
+            # Only geometry and conversion to tensor are cached.
+            prefix = transforms.Compose(transform.transforms[:2])
+            suffix = transforms.Compose(transform.transforms[2:])
+            pixels = None if shared_cache is None else shared_cache.setdefault(split, {})
+            dataset = PapilaDataset(dataset_dir, records[split], prefix, after_cache=suffix, cached_pixels=pixels)
+        else:
+            dataset = PapilaDataset(dataset_dir, records[split], transform)
         return DataLoader(
-            PapilaDataset(dataset_dir, records[split], transform),
+            dataset,
             batch_size=batch_size,
             shuffle=split == "train",
             num_workers=num_workers,
             pin_memory=device.pin_memory,
+            persistent_workers=persistent_workers,
             generator=torch.Generator().manual_seed(seed),
         )
 

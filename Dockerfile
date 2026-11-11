@@ -18,9 +18,9 @@ RUN python -m pip install --no-cache-dir -r requirements-backend.txt \
         --index-url https://download.pytorch.org/whl/cpu
 COPY backend/ ./backend/
 COPY src/ ./src/
-COPY configs/papila-internal-test.json ./configs/
+COPY configs/glaucoai-models.json configs/papila-internal-test.json ./configs/
 COPY --from=frontend-build /build/dist ./frontend/dist/
-RUN test -s backend/predict/best.pt
+RUN test -s backend/predict/resnet34.pt && test -s backend/predict/best.pt
 USER 10001:10001
 EXPOSE 8000
 HEALTHCHECK --start-period=60s CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('PORT', '8000') + '/api/health', timeout=3).close()"]

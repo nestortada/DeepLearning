@@ -111,7 +111,9 @@ def compare_validation(
             "checkpoint_sha256": hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
             "validation_at_0_5": {"val_loss": loss, **validation_metrics(labels, logits, 0.5)},
             "exploratory_threshold": select_threshold(rows),
-            "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
+            "trainable_parameters": summary.get(
+                "trainable_parameters", sum(p.numel() for p in model.parameters() if p.requires_grad),
+            ),
             "total_parameters": sum(p.numel() for p in model.parameters()),
             "training": {field: summary[field] for field in (
                 "epochs_run", "seconds", "gpu", "peak_cuda_allocated_mib", "peak_cuda_reserved_mib",

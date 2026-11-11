@@ -1,0 +1,43 @@
+{
+  "manifest_sha256": "c82776614b94d458e42e56b8f66270e1fbe0be9b4a80a741e2cb6923449ef5cd",
+  "target": 0.85,
+  "seeds": [42, 43, 44],
+  "common": {
+    "image_size": 224,
+    "batch_size": 16,
+    "epochs": 15,
+    "patience": 5,
+    "learning_rate": 0.0003,
+    "positive_weight": 3.807017543859649,
+    "tune_blocks": 1,
+    "cache_preprocessed": true
+  },
+  "architectures": ["resnet18", "resnet34", "efficientnet_b0"],
+  "screen": {
+    "head": {"tune_blocks": 0},
+    "last-two": {"tune_blocks": 2},
+    "progressive": {"progressive_head_epochs": 3},
+    "batchnorm": {"freeze_batch_norm": false},
+    "lr-1e4": {"learning_rate": 0.0001},
+    "lr-1e3": {"learning_rate": 0.001},
+    "lr-discriminative": {"backbone_learning_rate": 0.00003},
+    "plateau": {"scheduler": "plateau"},
+    "cosine": {"scheduler": "cosine"},
+    "photometric": {"augmentation": "photometric"},
+    "rotation": {"augmentation": "rotation"},
+    "bce": {"positive_weight": 1.0},
+    "bce-w2": {"positive_weight": 2.0}
+  },
+  "pilots": {
+    "fp32-cache": {},
+    "fp16-cache": {"precision": "fp16"},
+    "bf16-cache": {"precision": "bf16"},
+    "unpinned": {"pin_memory": false},
+    "batch32": {"batch_size": 32},
+    "uncached": {"cache_preprocessed": false},
+    "workers2": {"cache_preprocessed": false, "num_workers": 2},
+    "workers2-persistent": {"cache_preprocessed": false, "num_workers": 2, "persistent_workers": true}
+  },
+  "pilot_epochs": 3,
+  "confirm_top": 2
+}

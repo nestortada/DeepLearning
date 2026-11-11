@@ -15,3 +15,4 @@ tests
 **/*.pth
 **/*.onnx
 !backend/predict/best.pt
+!backend/predict/resnet34.pt

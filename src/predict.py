@@ -34,11 +34,15 @@ def score_image(model, image: Image.Image, transform, device: torch.device | str
     return score
 
 
-def predict_image(checkpoint_path: Path, image_path: Path, device: torch.device | str = "cpu") -> dict:
+def predict_image(
+    checkpoint_path: Path, image_path: Path, device: torch.device | str = "cpu", *, threshold: float | None = None,
+) -> dict:
     model, checkpoint = load_checkpoint(checkpoint_path, device)
+    threshold = checkpoint["config"]["threshold"] if threshold is None else threshold
+    if not 0 <= threshold <= 1:
+        raise ValueError("El umbral debe estar en [0, 1].")
     with Image.open(image_path) as image:
         score = score_image(model, image, checkpoint_transform(checkpoint), device)
-    threshold = checkpoint["config"]["threshold"]
     label = int(score >= threshold)
     return {"score_glaucoma": score, "threshold": threshold, "label": label,
             "class": CLASSES[label], "selected_epoch": checkpoint["epoch"]}
@@ -48,11 +52,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
+    parser.add_argument("--threshold", type=float, help="Umbral operativo fijado en validación.")
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
     device = select_device(prefer_cuda=not args.cpu, enable_amp=False)
     try:
-        result = predict_image(args.checkpoint, args.image, device.device)
+        result = predict_image(args.checkpoint, args.image, device.device, threshold=args.threshold)
     except (OSError, ValueError, RuntimeError, KeyError, UnpicklingError, Image.DecompressionBombError) as error:
         parser.error(str(error))
     print(json.dumps({**result, "device": str(device.device), "use": "puntaje académico sin calibrar"},

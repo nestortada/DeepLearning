@@ -1,9 +1,10 @@
 """Exercise compiled-mode routing and the frozen checkpoint on supported devices."""
 
 import hashlib
-import json
+import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,8 +16,6 @@ from backend import main
 from test_backend import upload
 
 
-SPEC = json.loads(main.CONFIG.read_text(encoding="utf-8"))["models"]["ResNet18"]
-CHECKPOINT = main.CHECKPOINT
 ORIGIN = "http://127.0.0.1:8000"
 
 
@@ -38,8 +37,10 @@ class DemoStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             app = main.create_app(fixture_dist(root))
-            path = root / "best.pt"
-            with patch.object(main, "CHECKPOINT", path), patch.object(main, "load_checkpoint") as deserialize:
+            path = root / "resnet34.pt"
+            with patch.dict(os.environ, {"GLAUCOAI_MODEL": "resnet34"}):
+                spec = replace(main.model_spec(), checkpoint=path)
+            with patch.object(main, "model_spec", return_value=spec), patch.object(main, "load_checkpoint") as deserialize:
                 for checkpoint_present, message in ((False, "Falta el checkpoint"), (True, "SHA-256")):
                     if checkpoint_present:
                         path.write_bytes(b"different model")
@@ -52,10 +53,17 @@ class DemoStartupTests(unittest.TestCase):
 
 
 class DemoCheckpointTests(unittest.TestCase):
-    def _verify_demo(self, *, cpu: bool):
+    def _verify_demo(self, *, cpu: bool, override: str | None = None):
         self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"GLAUCOAI_CPU": str(int(cpu))}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"GLAUCOAI_CPU": str(int(cpu))}):
+            if override is None:
+                os.environ.pop("GLAUCOAI_MODEL", None)
+            else:
+                os.environ["GLAUCOAI_MODEL"] = override
+            spec = main.model_spec()
+            expected_architecture = override or "resnet34"
+            expected_threshold = {"resnet34": 0.48704302310943604, "resnet18": 0.35}[expected_architecture]
             app = main.create_app(fixture_dist(Path(directory)))
             with TestClient(app, base_url=ORIGIN) as client:
                 page = client.get("/")
@@ -69,20 +77,36 @@ class DemoCheckpointTests(unittest.TestCase):
                 self.assertEqual(health.status_code, 200)
                 self.assertEqual(health.headers["cache-control"], "no-store")
                 self.assertEqual(health.json()["device"], "cpu" if cpu else "cuda:0")
-                self.assertEqual(health.json()["threshold"], 0.35)
+                self.assertEqual(health.json()["model"], expected_architecture)
+                self.assertEqual(health.json()["threshold"], expected_threshold)
                 self.assertEqual(health.json(), client.get("/health").json())
                 self.assertEqual(client.get("/api/missing").status_code, 404)
                 service = app.state.service
                 self.assertNotIn("state_dict", service.checkpoint)
+                self.assertFalse(any(module.training for module in service.model.modules()))
+                if expected_architecture == "resnet34":
+                    backbone = service.model.backbone
+                    self.assertEqual([len(stage) for stage in (backbone.layer1, backbone.layer2, backbone.layer3,
+                                                               backbone.layer4)], [3, 4, 6, 3])
+                    self.assertEqual((backbone.fc.in_features, backbone.fc.out_features), (512, 1))
+                    self.assertEqual(service.checkpoint["epoch"], 4)
+                    self.assertEqual(service.checkpoint["config"]["seed"], 43)
                 before = {name: tensor.cpu().clone() for name, tensor in service.model.state_dict().items()}
                 headers = {"Content-Type": "image/png"}
                 for image in (upload(100, 150), upload(190, 120), upload(100, 150)):
                     prediction = client.post("/api/predict", headers=headers, content=image)
                     analyzed = client.post("/api/analyze", headers=headers, content=image)
                     self.assertEqual((prediction.status_code, analyzed.status_code), (200, 200))
-                    self.assertAlmostEqual(prediction.json()["score_glaucoma"], analyzed.json()["score_glaucoma"], places=6)
-                    self.assertEqual(prediction.json()["label"], analyzed.json()["label"])
-                    self.assertTrue(analyzed.json()["overlay_png"].startswith("iVBORw0KGgo"))
+                    pred, cam = prediction.json(), analyzed.json()
+                    self.assertEqual(pred["model"], expected_architecture)
+                    self.assertEqual(cam["model"], expected_architecture)
+                    self.assertEqual(pred["threshold"], expected_threshold)
+                    self.assertEqual(cam["threshold"], expected_threshold)
+                    self.assertAlmostEqual(pred["score_glaucoma"], cam["score_glaucoma"], places=6)
+                    self.assertEqual(pred["label"], int(pred["score_glaucoma"] >= expected_threshold))
+                    self.assertEqual(pred["label"], cam["label"])
+                    self.assertEqual(cam["target_layer"], "backbone.layer4[-1]")
+                    self.assertTrue(cam["overlay_png"].startswith("iVBORw0KGgo"))
 
                 broken = client.post("/api/analyze", headers=headers, content=b"corrupt")
                 self.assertEqual(broken.status_code, 422)
@@ -92,15 +116,18 @@ class DemoCheckpointTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         decode.return_value.getpixel((0, 0))
                 self.assertEqual(client.post("/api/analyze", headers=headers, content=upload()).status_code, 200)
-                self.assertFalse(service.model.backbone.layer4[-1]._forward_hooks)
+                self.assertFalse(service.model.gradcam_layer._forward_hooks)
                 for name, tensor in service.model.state_dict().items():
                     self.assertTrue(torch.equal(before[name], tensor.cpu()), name)
             self.assertIsNone(app.state.service)
-        with CHECKPOINT.open("rb") as stream:
-            self.assertEqual(hashlib.file_digest(stream, "sha256").hexdigest(), SPEC["sha256"])
+        with spec.checkpoint.open("rb") as stream:
+            self.assertEqual(hashlib.file_digest(stream, "sha256").hexdigest(), spec.sha256)
 
     def test_compiled_api_with_frozen_model_on_cpu(self):
         self._verify_demo(cpu=True)
+
+    def test_compiled_api_with_resnet18_backup_on_cpu(self):
+        self._verify_demo(cpu=True, override="resnet18")
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA no disponible")
     def test_compiled_api_with_frozen_model_on_cuda(self):

@@ -62,6 +62,25 @@ class TransferLearningTests(unittest.TestCase):
     def test_cpu_head_updates_and_backbone_stays_frozen(self) -> None:
         self._verify_head_update(cuda=False)
 
+    def test_last_block_tuning_updates_only_convolutions_and_head(self) -> None:
+        model = PapilaResNet18(pretrained=False, tune_last_block=True).train()
+        before = {name: tensor.clone() for name, tensor in model.state_dict().items()}
+        optimizer = torch.optim.SGD((p for p in model.parameters() if p.requires_grad), lr=0.1)
+        model(torch.randn(2, 3, 32, 32)).sum().backward()
+        optimizer.step()
+        changed = {name for name, tensor in model.state_dict().items()
+                   if not torch.equal(before[name], tensor)}
+        self.assertIn("backbone.layer4.0.conv1.weight", changed)
+        self.assertIn("backbone.fc.weight", changed)
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.BatchNorm2d):
+                self.assertFalse(module.training, name)
+                self.assertTrue(all(not p.requires_grad for p in module.parameters()), name)
+        self.assertTrue(all(
+            name.startswith("backbone.fc.") or name.startswith("backbone.layer4.")
+            for name in changed
+        ))
+
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA no disponible")
     def test_cuda_amp_head_updates_and_backbone_stays_frozen(self) -> None:
         self._verify_head_update(cuda=True)

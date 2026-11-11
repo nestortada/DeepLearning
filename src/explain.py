@@ -1,4 +1,4 @@
-"""FP32 Grad-CAM for the positive logit of the frozen PAPILA ResNet18."""
+"""FP32 Grad-CAM for the positive logit of PAPILA transfer classifiers."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from torch.nn.functional import interpolate
 
 from .data import Letterbox
 from .predict import checkpoint_transform
-from .pretrained import PapilaResNet18
+from .pretrained import PapilaTransferModel
 
 
 TARGET_LAYER = "backbone.layer4[-1]"
@@ -77,7 +77,7 @@ def align_heatmap(
 
 
 def explain_image(
-    model: PapilaResNet18, image: Image.Image, checkpoint: dict, *, threshold: float,
+    model: PapilaTransferModel, image: Image.Image, checkpoint: dict, *, threshold: float,
     output_size: tuple[int, int] | None = None,
 ) -> GradCAMResult:
     """Explain glaucoma evidence, including for images classified as negative.
@@ -113,7 +113,7 @@ def explain_image(
     with torch.enable_grad(), torch.autocast(parameter.device.type, enabled=False):
         # A frozen backbone needs a differentiable input to build the activation graph.
         pixels.requires_grad_(True)
-        hook = model.backbone.layer4[-1].register_forward_hook(capture)
+        hook = model.gradcam_layer.register_forward_hook(capture)
         try:
             logits = model(pixels)
         finally:

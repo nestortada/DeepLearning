@@ -80,10 +80,11 @@ def benchmark(payloads, samples):
             concurrent_ms = list(pool.map(lambda payload: send("analyze", payload), batch))
         concurrent_total_ms = (perf_counter() - start) * 1000
         after_concurrent = _gpu_memory(device) if is_cuda else None
-        if service.model.backbone.layer4[-1]._forward_hooks:
+        if service.model.gradcam_layer._forward_hooks:
             raise RuntimeError("Quedaron hooks activos tras las solicitudes.")
 
     return {
+        "model": service.model.architecture, "threshold": service.threshold,
         "device": str(device), "torch": str(torch.__version__), "cpu_threads": torch.get_num_threads(),
         "gpu": torch.cuda.get_device_name(device) if is_cuda else None,
         "samples_per_phase": samples, "cold_model_load_ms": round(load[0], 2),
@@ -111,7 +112,7 @@ def run() -> None:
     if args.cpu:
         os.environ["GLAUCOAI_CPU"] = "1"
     try:
-        config = json.loads(main.CONFIG.read_text(encoding="utf-8"))
+        config = json.loads((main.ROOT / "configs" / "papila-internal-test.json").read_text(encoding="utf-8"))
         manifest_sha = config["dataset"]["manifest_sha256"]
         if sha256(args.manifest) != manifest_sha:
             raise ValueError("El manifiesto no coincide con el congelado.")
@@ -119,9 +120,9 @@ def run() -> None:
         if not set(args.image_id).issubset(validation):
             raise ValueError("Selecciona exclusivamente IDs de la partición de validación.")
         payloads = [(args.dataset_dir / validation[image_id].relative_path).read_bytes() for image_id in args.image_id]
+        spec = main.model_spec()
         report = benchmark(payloads, args.samples)
-        spec = config["models"]["ResNet18"]
-        if sha256(main.CHECKPOINT) != spec["sha256"] or sha256(args.manifest) != manifest_sha:
+        if sha256(spec.checkpoint) != spec.sha256 or sha256(args.manifest) != manifest_sha:
             raise ValueError("El checkpoint o el manifiesto cambió durante la medición.")
     except (OSError, ValueError, RuntimeError) as error:
         parser.error(str(error))

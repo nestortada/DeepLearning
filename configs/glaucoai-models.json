@@ -1,0 +1,15 @@
+{
+  "default": "resnet34",
+  "models": {
+    "resnet34": {
+      "checkpoint": "backend/predict/resnet34.pt",
+      "sha256": "7ad8935d2aeb82b5e95f849e2659259e90a11f71ae58cbe8dce5f2e0d2813f49",
+      "threshold": 0.48704302310943604
+    },
+    "resnet18": {
+      "checkpoint": "backend/predict/best.pt",
+      "sha256": "721699061b8f0489b77d3f2ce19bccd0d6468a396fc315d1d112ef41c154b761",
+      "threshold": 0.35
+    }
+  }
+}

@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass
@@ -26,17 +27,16 @@ from starlette.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from src.device import select_device
-from src.explain import TARGET_LAYER, explain_image
+from src.explain import explain_image
 from src.explain_visualization import heatmap_png, overlay_png
 from src.model import CLASSES, load_checkpoint
 from src.predict import checkpoint_transform, score_image
-from src.pretrained import PapilaResNet18
+from src.pretrained import PapilaTransferModel
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "configs" / "papila-internal-test.json"
+MODEL_CONFIG = ROOT / "configs" / "glaucoai-models.json"
 FRONTEND_DIST = ROOT / "frontend" / "dist"
-CHECKPOINT = ROOT / "backend" / "predict" / "best.pt"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 6_000_000
 MAX_SIDE = 4096
@@ -53,6 +53,7 @@ logger = logging.getLogger("uvicorn.error")
 
 
 class Prediction(BaseModel):
+    model: str
     score_glaucoma: float
     label: int
     classification: str
@@ -70,13 +71,30 @@ class Analysis(Prediction, Explanation):
     pass
 
 
+@dataclass(frozen=True)
+class ModelSpec:
+    architecture: str
+    checkpoint: Path
+    sha256: str
+    threshold: float
+
+
+def model_spec() -> ModelSpec:
+    config = json.loads(MODEL_CONFIG.read_text(encoding="utf-8"))
+    architecture = os.getenv("GLAUCOAI_MODEL", config["default"])
+    if architecture not in config["models"]:
+        raise ValueError(f"GLAUCOAI_MODEL debe ser uno de: {', '.join(config['models'])}.")
+    spec = config["models"][architecture]
+    return ModelSpec(architecture, ROOT / spec["checkpoint"], spec["sha256"], spec["threshold"])
+
+
 def _error(status: int, detail: str) -> HTTPException:
     return HTTPException(status, detail, headers=NO_STORE)
 
 
 @dataclass
 class ModelService:
-    model: PapilaResNet18
+    model: PapilaTransferModel
     checkpoint: dict
     threshold: float
     device: torch.device
@@ -87,8 +105,8 @@ class ModelService:
             if not explain:
                 score = score_image(self.model, image, checkpoint_transform(self.checkpoint), self.device)
                 label = int(score >= self.threshold)
-                return Prediction(score_glaucoma=score, label=label, classification=CLASSES[label],
-                                  threshold=self.threshold)
+                return Prediction(model=self.model.architecture, score_glaucoma=score, label=label,
+                                  classification=CLASSES[label], threshold=self.threshold)
 
             return self._explain(image)
 
@@ -99,11 +117,11 @@ class ModelService:
                                    output_size=preview.size)
             heatmap = result.heatmap
             return Analysis(
-                score_glaucoma=result.score_glaucoma, label=result.label,
+                model=self.model.architecture, score_glaucoma=result.score_glaucoma, label=result.label,
                 classification=CLASSES[result.label], threshold=result.threshold,
                 heatmap_png=base64.b64encode(heatmap_png(heatmap)).decode("ascii"),
                 overlay_png=base64.b64encode(overlay_png(preview, heatmap)).decode("ascii"),
-                target_layer=TARGET_LAYER, has_signal=bool(heatmap.any()),
+                target_layer=self.model.gradcam_layer_name, has_signal=bool(heatmap.any()),
             )
 
 
@@ -111,24 +129,35 @@ def is_remote() -> bool:
     return os.getenv("RENDER") == "true"
 
 
-def load_model() -> ModelService:
-    spec = json.loads(CONFIG.read_text(encoding="utf-8"))["models"]["ResNet18"]
-    # Load the same bytes whose digest was verified, even if the file is replaced.
-    content = CHECKPOINT.read_bytes()
-    if hashlib.sha256(content).hexdigest() != spec["sha256"]:
-        raise ValueError("SHA-256 del checkpoint ResNet18 distinto del congelado.")
-    device = select_device(prefer_cuda=os.environ.get("GLAUCOAI_CPU") != "1", enable_amp=False).device
-    if device.type == "cuda":
-        torch.backends.cudnn.conv.fp32_precision = "ieee"
-        torch.backends.cuda.matmul.fp32_precision = "ieee"
-    with BytesIO(content) as stream:
+def load_service(
+    checkpoint_path: Path, sha256: str, threshold: float, *, prefer_cuda: bool = True,
+) -> ModelService:
+    if not 0 <= threshold <= 1:
+        raise ValueError("El umbral debe estar en [0, 1].")
+    # Use the same open file for hashing and loading, without buffering the checkpoint in RAM.
+    with checkpoint_path.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != sha256:
+            raise ValueError("SHA-256 del checkpoint distinto del congelado.")
+        stream.seek(0)
+        device = select_device(prefer_cuda=prefer_cuda, enable_amp=False).device
+        if device.type == "cuda":
+            torch.backends.cudnn.conv.fp32_precision = "ieee"
+            torch.backends.cuda.matmul.fp32_precision = "ieee"
         model, checkpoint = load_checkpoint(stream, device)
-    if not isinstance(model, PapilaResNet18):
-        raise ValueError("Se esperaba un checkpoint ResNet18.")
+    if not isinstance(model, PapilaTransferModel) or checkpoint["preprocessing"].get("geometry") != "letterbox":
+        raise ValueError("Se esperaba un checkpoint preentrenado con preprocesamiento letterbox.")
     model.requires_grad_(False)
     del checkpoint["state_dict"]  # The loaded model already owns the tensors.
-    # Inference uses the frozen evaluation threshold, which is separate from training metadata.
-    return ModelService(model, checkpoint, spec["threshold"], device)
+    return ModelService(model, checkpoint, threshold, device)
+
+
+def load_model() -> ModelService:
+    spec = model_spec()
+    service = load_service(spec.checkpoint, spec.sha256, spec.threshold,
+                           prefer_cuda=os.environ.get("GLAUCOAI_CPU") != "1")
+    if service.model.architecture != spec.architecture:
+        raise ValueError(f"El checkpoint no coincide con la arquitectura configurada ({spec.architecture}).")
+    return service
 
 
 def _decode_image(payload: bytes, image_format: str, image_size: int) -> Image.Image:
@@ -181,10 +210,12 @@ async def lifespan(app: FastAPI):
     app.state.service = None
     app.state.slots = asyncio.Semaphore(2)
     try:
-        app.state.service = load_model()
-        logger.info("ResNet18 verificada y cargada en %s.", app.state.service.device)
-    except FileNotFoundError:
-        logger.error("Falta el checkpoint backend/predict/best.pt o su configuración.")
+        loader = app.state.model_loader or load_model
+        app.state.service = loader()
+        logger.info("%s verificada y cargada en %s.",
+                    app.state.service.model.architecture, app.state.service.device)
+    except FileNotFoundError as error:
+        logger.error("Falta el checkpoint seleccionado o su configuración. %s", error.filename or error)
     except ValueError as error:
         logger.error("No se pudo verificar el modelo: %s", error)
     except (OSError, RuntimeError, KeyError):
@@ -209,7 +240,7 @@ async def health(request: Request, response: Response):
     if service is None:
         return JSONResponse({"status": "unavailable", "model_ready": False}, status_code=503, headers=NO_STORE)
     response.headers.update(NO_STORE)
-    return {"status": "ok", "model_ready": True, "model": "resnet18", "device": str(service.device),
+    return {"status": "ok", "model_ready": True, "model": service.model.architecture, "device": str(service.device),
             "threshold": service.threshold}
 
 
@@ -259,9 +290,12 @@ class DemoStaticFiles(StaticFiles):
         return response
 
 
-def create_app(frontend_dist: Path | None = None) -> FastAPI:
+def create_app(
+    frontend_dist: Path | None = None, *, model_loader: Callable[[], ModelService] | None = None,
+) -> FastAPI:
     app = FastAPI(title="GlaucoAI · API académica", lifespan=lifespan)
     app.state.demo = frontend_dist is not None
+    app.state.model_loader = model_loader
     app.include_router(api, prefix="/api")
     app.include_router(api, include_in_schema=False)
     if frontend_dist is not None:

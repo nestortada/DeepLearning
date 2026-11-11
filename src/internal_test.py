@@ -159,19 +159,21 @@ def _difference(a: int | float | None, b: int | float | None) -> int | float | N
 def bootstrap_intervals(
     patient_ids: list[str], labels: np.ndarray, logits: dict[str, np.ndarray],
     predictions: dict[str, np.ndarray], estimates: dict, *, replicates: int, seed: int, confidence: float,
+    pair: tuple[str, str] = ("ResNet18", "CNN"),
 ) -> dict:
     groups = defaultdict(list)
     for index, patient in enumerate(patient_ids):
         groups[patient].append(index)
     clusters = [groups[patient] for patient in sorted(groups)]
     rng = np.random.default_rng(seed)
-    difference = "ResNet18_minus_CNN"
+    candidate, reference = pair
+    difference = f"{candidate}_minus_{reference}"
     samples = {name: {metric: [] for metric in METRICS} for name in (*logits, difference)}
     for draw in rng.integers(len(clusters), size=(replicates, len(clusters))):
         indices = np.concatenate([clusters[index] for index in draw])
         values = {name: binary_metrics(labels[indices], score[indices], predictions[name][indices])
                   for name, score in logits.items()}
-        values[difference] = {metric: _difference(values["ResNet18"][metric], values["CNN"][metric])
+        values[difference] = {metric: _difference(values[candidate][metric], values[reference][metric])
                               for metric in METRICS}
         for name, metrics in values.items():
             for metric in METRICS:

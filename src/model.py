@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .pretrained import RESNET18, PapilaResNet18
+from .pretrained import BACKBONES, RESNET18, PapilaResNet18, PapilaTransferModel
 
 
 ARCHITECTURE = "papila_cnn"
@@ -41,7 +41,7 @@ def read_checkpoint(path: Path | BinaryIO) -> dict:
     if (
         not isinstance(checkpoint, dict)
         or checkpoint.get("format_version") != CHECKPOINT_VERSION
-        or checkpoint.get("architecture", {}).get("name") not in (ARCHITECTURE, RESNET18)
+        or checkpoint.get("architecture", {}).get("name") not in (ARCHITECTURE, *BACKBONES)
         or tuple(checkpoint.get("classes", ())) != CLASSES
     ):
         raise ValueError(f"Checkpoint PAPILA incompatible: {path}")
@@ -50,12 +50,14 @@ def read_checkpoint(path: Path | BinaryIO) -> dict:
 
 def load_checkpoint(
     path: Path | BinaryIO, device: torch.device | str = "cpu",
-) -> tuple[PapilaCNN | PapilaResNet18, dict]:
+) -> tuple[PapilaCNN | PapilaTransferModel, dict]:
     """Restore a model in evaluation mode without downloading initial weights."""
     checkpoint = read_checkpoint(path)
     architecture = checkpoint["architecture"]
     if architecture["name"] == RESNET18:
-        model = PapilaResNet18(pretrained=False)
+        model = PapilaResNet18(pretrained=False, dropout=architecture.get("dropout", 0.0))
+    elif architecture["name"] in BACKBONES:
+        model = PapilaTransferModel(architecture["name"], pretrained=False, dropout=architecture.get("dropout", 0.0))
     else:
         model = PapilaCNN(architecture["image_size"], architecture["dropout"])
     model.load_state_dict(checkpoint["state_dict"])

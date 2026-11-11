@@ -1,10 +1,11 @@
 # GlaucoAI
 
-GlaucoAI es una demostración académica local que clasifica imágenes de fondo de ojo con ResNet18. La interfaz React muestra la clase, el puntaje experimental sin calibrar y un mapa Grad-CAM. El proyecto incluye una CNN de referencia, experimentos históricos de hiperparámetros y un protocolo reproducible de evaluación interna con PAPILA.
+GlaucoAI es una demostración académica que clasifica imágenes de fondo de ojo con ResNet34. La interfaz React muestra el modelo utilizado, la clase, el puntaje experimental sin calibrar, el umbral y un mapa Grad-CAM. El proyecto conserva ResNet18 como respaldo experimental e incluye un protocolo reproducible de evaluación interna con PAPILA.
 
 > **Aviso:** proyecto académico/educativo. No es un instrumento de diagnóstico clínico.
 
 ## Contenido
+- [Modelo principal y respaldo](#modelo-principal-y-respaldo)
 - [Dataset](#dataset)
 - [Preparación reproducible de PAPILA](#preparación-reproducible-de-papila)
 - [Carga de PAPILA y CUDA](#carga-de-papila-y-cuda)
@@ -17,6 +18,19 @@ GlaucoAI es una demostración académica local que clasifica imágenes de fondo 
 - [Experimentos históricos del notebook](#experimentos-históricos-del-notebook)
 - [Estructura del repositorio](#estructura-del-repositorio)
 - [Limitaciones](#limitaciones)
+
+## Modelo principal y respaldo
+
+FastAPI carga [ResNet34](backend/predict/resnet34.pt) por defecto desde [la configuración de modelos](configs/glaucoai-models.json). Es una copia byte a byte de `resnet34-lr-low-s43`, el finalista 3 de la campaña PAPILA. El checkpoint corresponde a la época 4 y el umbral fijado en validación es **`0.48704302310943604`**. La entrada conserva RGB, letterbox bilineal a 224 × 224 y normalización ImageNet. Grad-CAM usa `backbone.layer4[-1]`.
+
+| Test interno PAPILA (84 ojos) | Glaucoma detectado | Falsos positivos | Sensibilidad | Especificidad | ROC-AUC |
+|---|---:|---:|---:|---:|---:|
+| ResNet34 | 13/17 | 5 | 76,5 % | 92,5 % | 0,873 |
+| ResNet18 de respaldo | 6/17 | 4 | 35,3 % | 94,0 % | 0,795 |
+
+En esta cohorte, ResNet34 detectó siete casos adicionales con un falso positivo adicional. El test interno se había consultado en campañas anteriores. Sus resultados son exploratorios y la confirmación clínica requiere una cohorte independiente. [Configuración exacta, métricas de validación y procedencia](docs/optimizacion-papila.md#implementación-de-resnet34).
+
+El respaldo [ResNet18](backend/predict/best.pt) conserva su umbral de `0.35`. Para arrancar con ese respaldo, define `GLAUCOAI_MODEL=resnet18` antes de iniciar el servidor. Consulta [el arranque local](#arranque-con-un-comando).
 
 ## Dataset
 PAPILA reúne imágenes de ambos ojos de 244 pacientes, datos clínicos y contornos de disco y copa. La tabla siguiente describe la partición del notebook histórico. El manifiesto congelado de la evaluación reproducible usa 274 imágenes de entrenamiento, 62 de validación y 84 de test. [Artículo de PAPILA](https://doi.org/10.1038/s41597-022-01388-1)
@@ -135,11 +149,15 @@ La comparación recarga ambos checkpoints en las mismas imágenes de validación
 
 El análisis exploratorio usa una rejilla de `0.00` a `1.00` en pasos de `0.05`. Entre los umbrales con especificidad de al menos 80 %, maximiza sensibilidad y resuelve empates por mayor especificidad y luego mayor umbral. El punto elegido queda en el informe, separado del umbral `0.50` del checkpoint. Con 13 positivos, una sola imagen mueve la sensibilidad 7,7 puntos porcentuales. Las métricas de estos umbrales usan el mismo conjunto que los seleccionó. Una futura evaluación del test de PAPILA sería interna y exploratoria debido a su consulta histórica.
 
-Un experimento posterior de ajuste parcial podría descongelar `layer4` con un learning rate inferior al de la cabeza y conservar el protocolo de validación agrupado por paciente. La corrida actual ajusta exclusivamente la cabeza y reporta puntajes académicos sin calibrar.
+La corrida de referencia ajusta exclusivamente la cabeza y reporta puntajes académicos sin calibrar. El [informe de optimización en la RTX 4050](docs/optimizacion-papila.md) documenta los pilotos y el ajuste fino opcional de `layer4` con BatchNorm congelada.
+
+La [campaña de investigación con PAPILA](docs/investigacion-papila.md) compara tres arquitecturas, documenta los experimentos de entrenamiento y reproduce la selección de umbral y la evaluación interna.
+
+La [campaña experimental final](docs/campana-final-papila.md) añade cribado por etapas, confirmación con tres semillas, intervalos por paciente y revisión de errores con Grad-CAM y contornos oficiales.
 
 ## Evaluación interna congelada de PAPILA
 
-`configs/papila-internal-test.json` fija checkpoints, preprocesamiento, dependencias, umbrales e identidades SHA-256 del manifiesto y las imágenes de cada split. ResNet18, época 18, se evalúa a `0.35`. La CNN de referencia, época 8, se evalúa a `0.50`. Su umbral exploratorio de validación `0.55` se conserva como antecedente. Los resultados de validación en los umbrales aplicados se copiaron del informe de comparación previo, identificado por su hash.
+La evaluación histórica de ResNet18 y CNN usa `configs/papila-internal-test.json` para fijar checkpoints, preprocesamiento, dependencias, umbrales e identidades SHA-256 del manifiesto y las imágenes de cada split. ResNet18, época 18, se evalúa a `0.35`. La CNN de referencia, época 8, se evalúa a `0.50`. Su umbral exploratorio de validación `0.55` se conserva como antecedente. Los resultados de validación en los umbrales aplicados se copiaron del informe de comparación previo, identificado por su hash.
 
 Resultados ya registrados en el informe interno, en los mismos umbrales congelados. La validación sirvió para comparar modelos y fijar decisiones. El test interno tiene carácter exploratorio por su consulta histórica.
 
@@ -157,6 +175,8 @@ Los intervalos exploratorios del 95 % usan 5.000 remuestreos percentiles por pac
 PAPILA test se consultó en experimentos históricos. Esta evaluación es interna y exploratoria. Las decisiones de modelo, umbral y preprocesamiento se fijaron en validación antes de ejecutarla. Los resultados describen puntajes académicos sin calibrar.
 
 ## Grad-CAM de ResNet18 en validación
+
+Esta comprobación corresponde al checkpoint histórico de ResNet18. La ResNet34 principal usa el mismo método y la misma ubicación de capa objetivo en su propia arquitectura.
 
 La capa objetivo es `model.backbone.layer4[-1]`. Para cada imagen se deriva el logit de glaucoma respecto a las activaciones `512 × 7 × 7`. Se promedian espacialmente los gradientes, se ponderan los canales y se aplica ReLU. El mapa se interpola a `224 × 224`, se recorta con la geometría exacta del letterbox y se normaliza dentro del contenido antes de reescalarlo al tamaño nativo. Cada mapa tiene su propia escala relativa. [Método Grad-CAM](https://openaccess.thecvf.com/content_iccv_2017/html/Selvaraju_Grad-CAM_Visual_Explanations_ICCV_2017_paper.html)
 
@@ -191,7 +211,7 @@ npm.cmd --prefix frontend ci
 npm.cmd --prefix frontend run build
 ```
 
-Para una instalación solo CPU, usa `https://download.pytorch.org/whl/cpu` como índice en el comando de PyTorch. El repositorio incluye el checkpoint de la demo en `backend/predict/best.pt`. Su SHA-256 es `721699061b8f0489b77d3f2ce19bccd0d6468a396fc315d1d112ef41c154b761`. Para preparar otra máquina, clona el repositorio e instala las dependencias.
+Para una instalación solo CPU, usa `https://download.pytorch.org/whl/cpu` como índice en el comando de PyTorch. Ambos checkpoints están en `backend/predict/` y el servidor verifica el SHA-256 del seleccionado antes de cargarlo.
 
 ### Arranque con un comando
 
@@ -199,12 +219,21 @@ Para una instalación solo CPU, usa `https://download.pytorch.org/whl/cpu` como 
 .\.venv\Scripts\python.exe -m backend.demo
 ```
 
-Desde la raíz, ejecuta el comando y abre [GlaucoAI](http://127.0.0.1:8000/) cuando Uvicorn anuncie la dirección. El comando requiere el build del frontend y verifica el checkpoint antes de abrir el puerto. Añade `--cpu` para forzar CPU o `--port 8001` para elegir otro puerto local. El proceso usa las dependencias ya instaladas. Para detenerlo, pulsa `Ctrl+C`.
+Desde la raíz, ejecuta el comando y abre [GlaucoAI](http://127.0.0.1:8000/) cuando Uvicorn anuncie la dirección. El comando requiere el build del frontend y arranca con ResNet34 por defecto. Añade `--cpu` para forzar CPU o `--port 8001` para elegir otro puerto local. Para detenerlo, pulsa `Ctrl+C`.
+
+Para una sesión con el respaldo, detén el servidor y ejecuta:
+
+```powershell
+$env:GLAUCOAI_MODEL = 'resnet18'
+.\.venv\Scripts\python.exe -m backend.demo
+```
+
+Al terminar esa sesión, ejecuta `Remove-Item Env:GLAUCOAI_MODEL` y vuelve a iniciar la demo para usar ResNet34. Consulta `/api/health` para confirmar qué modelo está cargado.
 
 | Ruta de FastAPI | Respuesta |
 |---|---|
-| `GET /api/health` | Estado del modelo, dispositivo y umbral. En desarrollo devuelve `503` si el modelo no pudo cargarse. |
-| `POST /api/predict` | Puntaje experimental en `[0, 1]`, etiqueta, clase y umbral `0.35`. |
+| `GET /api/health` | Identificador del modelo, estado, dispositivo y umbral operativo. En desarrollo devuelve `503` si el modelo no pudo cargarse. |
+| `POST /api/predict` | `model`, puntaje experimental en `[0, 1]`, etiqueta, clase y umbral exacto del modelo cargado. |
 | `POST /api/explain` | PNG del mapa y de la superposición en Base64, capa objetivo e indicador de señal. |
 | `POST /api/analyze` | Predicción y explicación con una sola pasada del modelo. |
 
@@ -226,13 +255,13 @@ npm.cmd --prefix frontend run lint
 npm.cmd --prefix frontend run build
 ```
 
-Para reproducir la medición, usa el manifiesto congelado y una copia local de PAPILA. Añade `--cpu` para medir en CPU.
+Para medir el modelo activo, usa el manifiesto congelado y una copia local de PAPILA. Añade `--cpu` para medir en CPU.
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.benchmark_demo --dataset-dir path/to/PAPILA --manifest path/to/manifest-c.csv --image-id RET013OD --image-id RET033OD --samples 12
 ```
 
-El script verifica el manifiesto y los pesos. Mide la API ASGI en proceso después de calentar el modelo, salvo la carga inicial. Las cifras de respuesta incluyen decodificación y serialización. Los promedios corresponden a 12 solicitudes por fase en el equipo de referencia.
+El script verifica el manifiesto y los pesos. Mide la API ASGI en proceso después de calentar el modelo, salvo la carga inicial. Las cifras de respuesta incluyen decodificación y serialización. Los promedios históricos de la tabla corresponden a ResNet18, con 12 solicitudes por fase en el equipo de referencia.
 
 | Dispositivo | Carga inicial | Inferencia FP32 | Grad-CAM FP32 | Respuesta `/api/analyze` | Respuesta con dos clientes |
 |---|---:|---:|---:|---:|---:|
@@ -254,13 +283,13 @@ docker build --platform linux/amd64 -t glaucoai:local .
 docker run --rm -p 127.0.0.1:8000:8000 glaucoai:local
 ```
 
-Abre [GlaucoAI](http://127.0.0.1:8000/). El contenedor compila React, sirve la aplicación y ejecuta PyTorch en CPU. La imagen incluye el checkpoint de la demo y verifica su SHA-256 al arrancar.
+Abre [GlaucoAI](http://127.0.0.1:8000/). El contenedor compila React, sirve la aplicación y ejecuta PyTorch en CPU. Incluye ambos checkpoints, arranca con ResNet34 y verifica el archivo seleccionado. Usa `-e GLAUCOAI_MODEL=resnet18` al iniciar el contenedor para cargar el respaldo.
 
 ### Backend en Render
 
 1. Crea un Blueprint con `render.yaml` en la rama del repositorio que contenga estos archivos. El servicio `glaucoai-api` usa Docker en CPU, plan gratuito `free` (0,1 CPU y 512 MB de RAM) y verificación en `/api/health`. [Planes de Render](https://render.com/docs/compute-plans)
-2. Render construye la imagen con `backend/predict/best.pt` incluido. Para desplegar un commit nuevo, inicia el despliegue manualmente desde el servicio.
-3. Abre `/api/health` en la URL HTTPS de Render y espera a que devuelva JSON con `model_ready: true`. Render Free suspende el servicio tras 15 minutos de inactividad y el siguiente arranque en frío puede tardar más de un minuto. [Límites del plan gratuito](https://render.com/docs/free)
+2. El Dockerfile incluye `backend/predict/resnet34.pt` y el respaldo `backend/predict/best.pt`. Para desplegar un commit nuevo, inicia el despliegue manualmente desde el servicio.
+3. Abre `/api/health` en la URL HTTPS de Render y verifica `model_ready: true` y `model: "resnet34"`. Render Free suspende el servicio tras 15 minutos de inactividad y el siguiente arranque en frío puede tardar más de un minuto. [Límites del plan gratuito](https://render.com/docs/free)
 
 ### Frontend en Vercel
 
@@ -306,7 +335,7 @@ Se prioriza el **recall**, porque un falso negativo (glaucoma no detectado) es m
 ├── notebooks/        # experimentos (barridos, factorial, métricas)
 ├── src/              # datos, modelo, entrenamiento y evaluación
 ├── models/           # checkpoints y resultados locales
-├── configs/          # protocolo y hashes congelados
+├── configs/          # modelos de servicio, protocolos y hashes congelados
 ├── backend/          # FastAPI, servicio del build e inicio local
 ├── frontend/         # aplicación React y build generado por Vite
 ├── scripts/          # medición reproducible de la demo
@@ -317,7 +346,7 @@ Se prioriza el **recall**, porque un falso negativo (glaucoma no detectado) es m
 ## Limitaciones
 - El conjunto de test tiene solo 84 imágenes (17 con glaucoma). Una diferencia de un caso cambia el recall aproximadamente 6 puntos, así que las comparaciones entre modelos son orientativas.
 - Un único split. No se usó validación cruzada.
-- La CNN histórica usa 96 × 96 px. ResNet18 usa 224 × 224 px y su Grad-CAM parte de una cuadrícula de 7 × 7.
+- La CNN histórica usa 96 × 96 px. ResNet34 y ResNet18 usan 224 × 224 px y su Grad-CAM parte de una cuadrícula de 7 × 7.
 - Los puntajes son experimentales, pueden producir falsos positivos y negativos, y carecen de calibración y validación clínica. Los ejemplos Grad-CAM son ilustrativos.
 
 ## Licencia y créditos

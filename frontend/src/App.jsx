@@ -3,6 +3,7 @@ import './App.css'
 
 const maxImageBytes = 10 * 1024 * 1024
 const scoreFormat = new Intl.NumberFormat('es-CO', { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+const modelNames = { resnet34: 'ResNet34', resnet18: 'ResNet18', efficientnet_b0: 'EfficientNet-B0' }
 const connectionError = 'No se pudo conectar con el servidor de análisis. Comprueba que esté iniciado.'
 const apiUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '')
 
@@ -169,9 +170,10 @@ function App() {
               <h3>{result ? 'Resultado experimental' : 'Tu resultado aparecerá aquí'}</h3>
               {result ? (
                 <>
+                  {result.model && <p>Modelo utilizado <strong>{modelNames[result.model] ?? result.model}</strong></p>}
                   <p>Clase asignada por el modelo: <strong>{result.label === 1 ? 'Glaucoma' : 'Sano'}</strong></p>
                   <p>Puntaje experimental de glaucoma: <strong>{scoreFormat.format(result.score_glaucoma)}</strong></p>
-                  <p>Escala de 0 a 1 sin calibración clínica. Umbral: {result.threshold.toLocaleString('es-CO')}.</p>
+                  <p>Escala de 0 a 1 sin calibración clínica. Umbral de decisión <strong>{String(result.threshold).replace('.', ',')}</strong>.</p>
                 </>
               ) : (
                 <p>{loading ? 'Generando el puntaje y Grad-CAM…' : 'Consulta la clasificación, el puntaje experimental y el mapa Grad-CAM.'}</p>
